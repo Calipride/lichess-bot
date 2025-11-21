@@ -10,3 +10,6 @@ lichess_bot_auto_logs/*
 *.log
 *.txt
 TEMP/*
+data/*.pgn.zst
+data/*.pgn
+
