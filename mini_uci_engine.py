@@ -14,6 +14,8 @@ import torch.nn as nn
 MODEL_PATH = Path(__file__).resolve().parent / "models" / "value_model.pt"
 INPUT_DIM = 64 * 6  # must match training
 
+class SearchTimeout(Exception):
+    pass
 
 class ValueNet(nn.Module):
     def __init__(self, input_dim=INPUT_DIM):
@@ -86,8 +88,10 @@ def evaluate(board: chess.Board) -> float:
 INF = 1e9
 
 
-def alphabeta(board: chess.Board, depth: int, alpha: float, beta: float) -> float:
-    """Classic alpha–beta search from side-to-move perspective."""
+def alphabeta(board: chess.Board, depth: int, alpha: float, beta: float, deadline: float) -> float:
+    if time.time() >= deadline:
+        raise SearchTimeout()
+
     if depth == 0 or board.is_game_over():
         return evaluate(board)
 
@@ -95,12 +99,12 @@ def alphabeta(board: chess.Board, depth: int, alpha: float, beta: float) -> floa
     if not legal_moves:
         return evaluate(board)
 
-    maximizing = board.turn  # True if white to move, False if black
+    maximizing = board.turn
     if maximizing:
         value = -INF
         for move in legal_moves:
             board.push(move)
-            value = max(value, alphabeta(board, depth - 1, alpha, beta))
+            value = max(value, alphabeta(board, depth - 1, alpha, beta, deadline))
             board.pop()
             alpha = max(alpha, value)
             if alpha >= beta:
@@ -110,7 +114,7 @@ def alphabeta(board: chess.Board, depth: int, alpha: float, beta: float) -> floa
         value = INF
         for move in legal_moves:
             board.push(move)
-            value = min(value, alphabeta(board, depth - 1, alpha, beta))
+            value = min(value, alphabeta(board, depth - 1, alpha, beta, deadline))
             board.pop()
             beta = min(beta, value)
             if beta <= alpha:
@@ -118,43 +122,41 @@ def alphabeta(board: chess.Board, depth: int, alpha: float, beta: float) -> floa
         return value
 
 
-def choose_best_move(board: chess.Board, max_depth: int) -> chess.Move | None:
-    """Pick the best move for the current side-to-move."""
+
+def choose_best_move(board: chess.Board, max_depth: int, time_limit_ms: int) -> chess.Move | None:
     legal_moves = list(board.legal_moves)
     if not legal_moves:
         return None
 
-    best_move = None
+    start = time.time()
+    deadline = start + (time_limit_ms / 1000.0)
+
+    best_move = legal_moves[0]
     best_value = -INF if board.turn == chess.WHITE else INF
 
     for move in legal_moves:
+        if time.time() >= deadline:
+            break
+
         board.push(move)
         value = alphabeta(board, max_depth - 1, -INF, INF)
         board.pop()
 
         if board.turn == chess.WHITE:
-            # we just popped, so board.turn is original side-to-move
-            # but value is from side-to-move perspective at deeper node
             if value > best_value:
-                best_value = value
-                best_move = move
+                best_value, best_move = value, move
         else:
             if value < best_value:
-                best_value = value
-                best_move = move
+                best_value, best_move = value, move
 
     return best_move
 
 
+
+
 def depth_from_movetime(ms: int) -> int:
-    """Very rough mapping: more time -> deeper search."""
-    if ms < 400:
-        return 2
-    if ms < 1200:
-        return 3
-    if ms < 3000:
-        return 4
-    return 5
+    return 2
+
 
 
 # ---------- UCI LOOP ----------
@@ -208,6 +210,7 @@ def uci_loop():
         elif cmd.startswith("go"):
             parts = cmd.split()
             movetime_ms = 1000
+
             if "movetime" in parts:
                 movetime_ms = int(parts[parts.index("movetime") + 1])
             elif "wtime" in parts and "btime" in parts:
@@ -219,18 +222,21 @@ def uci_loop():
                 except Exception:
                     pass
 
-            max_depth = depth_from_movetime(movetime_ms)
+            movetime_ms = min(movetime_ms, 800)
+            max_depth = min(depth_from_movetime(movetime_ms), 3)
+
             start = time.time()
-            move = choose_best_move(board, max_depth=max_depth)
+            move = choose_best_move(board, max_depth)
             elapsed = int((time.time() - start) * 1000)
 
             if move is None:
                 print("bestmove 0000")
             else:
-                board.push(move)
                 print(f"info depth {max_depth} time {elapsed} score cp 0")
                 print(f"bestmove {move.uci()}")
+
             sys.stdout.flush()
+
 
         elif cmd == "quit":
             break
