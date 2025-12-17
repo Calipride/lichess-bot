@@ -64,23 +64,19 @@ value_model = load_value_model()
 
 @torch.no_grad()
 def evaluate(board: chess.Board) -> float:
-    """Return a score from the side-to-move perspective (bigger = better)."""
-    # Hard terminal cases first
+    # Terminal cases from side-to-move perspective
     if board.is_checkmate():
-        # side to move is checkmated -> losing
-        return -10000.0
-    if (
-        board.is_stalemate()
-        or board.is_insufficient_material()
-        or board.can_claim_threefold_repetition()
-        or board.can_claim_fifty_moves()
-    ):
+        return -10000.0  # side to move is mated
+
+    if board.is_stalemate() or board.is_insufficient_material() or board.can_claim_fifty_moves():
         return 0.0
 
     vec = fen_to_vector(board.fen())
-    x = torch.from_numpy(vec).unsqueeze(0)  # shape (1, 384)
-    value = value_model(x).item()  # in [-1, 1]
-    return value * 1000.0  # scale up for search
+    x = torch.from_numpy(vec).unsqueeze(0)
+    value = value_model(x).item() * 1000.0  # model likely ~ "white advantage"
+
+    # Convert to side-to-move perspective:
+    return value if board.turn == chess.WHITE else -value
 
 
 # ---------- SEARCH: MINIMAX + ALPHA-BETA ----------
@@ -123,39 +119,71 @@ def alphabeta(board: chess.Board, depth: int, alpha: float, beta: float, deadlin
 
 
 
-def choose_best_move(board: chess.Board, max_depth: int, time_limit_ms: int) -> chess.Move | None:
+def ordered_moves(board: chess.Board):
+    """Return legal moves, optionally ordered by heuristics."""
+    return list(board.legal_moves)
+
+
+def choose_best_move_iterative(board: chess.Board, time_limit_ms: int, max_depth_cap: int = 6):
     legal_moves = list(board.legal_moves)
     if not legal_moves:
-        return None
+        return None, 0, 0
 
     start = time.time()
-    deadline = start + (time_limit_ms / 1000.0)
+    deadline = start + time_limit_ms / 1000.0
 
     best_move = legal_moves[0]
-    best_value = -INF if board.turn == chess.WHITE else INF
+    best_score = -INF
+    reached_depth = 0
 
-    for move in legal_moves:
+    for depth in range(1, max_depth_cap + 1):
         if time.time() >= deadline:
             break
 
-        board.push(move)
-        value = alphabeta(board, max_depth - 1, -INF, INF)
-        board.pop()
+        current_best_move = best_move
+        current_best_score = -INF
 
-        if board.turn == chess.WHITE:
-            if value > best_value:
-                best_value, best_move = value, move
+        for move in ordered_moves(board):
+            if time.time() >= deadline:
+                break
+
+            board.push(move)
+            try:
+                score = -alphabeta(board, depth - 1, -INF, INF, deadline)
+
+                # discourage repetition / shuffling
+                if board.is_repetition(2) or board.can_claim_threefold_repetition():
+                    score -= 150
+
+            except SearchTimeout:
+                # time is up; stop this depth
+                break
+            finally:
+                board.pop()
+
+            if score > current_best_score:
+                current_best_score = score
+                current_best_move = move
+
+        # if we got at least one scored move at this depth, commit it
+        if current_best_score > -INF:
+            best_move = current_best_move
+            best_score = current_best_score
+            reached_depth = depth
         else:
-            if value < best_value:
-                best_value, best_move = value, move
+            break
 
-    return best_move
+    return best_move, best_score, reached_depth
 
 
 
 
 def depth_from_movetime(ms: int) -> int:
-    return 2
+    if ms < 300:  return 2
+    if ms < 800:  return 3
+    if ms < 1500: return 4
+    return 5
+
 
 
 
@@ -207,8 +235,8 @@ def uci_loop():
                     for mv in parts[idx:]:
                         board.push_uci(mv)
 
-        elif cmd.startswith("go"):
-            parts = cmd.split()
+                elif cmd.startswith("go"):
+                    parts = cmd.split()
             movetime_ms = 1000
 
             if "movetime" in parts:
@@ -220,23 +248,34 @@ def uci_loop():
                     remain = wtime if board.turn == chess.WHITE else btime
                     movetime_ms = max(200, remain // 25)
                 except Exception:
-                    pass
+                    movetime_ms = 1000
 
-            movetime_ms = min(movetime_ms, 800)
-            max_depth = min(depth_from_movetime(movetime_ms), 3)
+            movetime_ms = min(movetime_ms, 3000)
 
             start = time.time()
-            move = choose_best_move(board, max_depth)
+            try:
+                move, score_cp, depth = choose_best_move_iterative(
+                    board,
+                    movetime_ms,
+                    max_depth_cap=6,
+                )
+            except SearchTimeout:
+                legal = list(board.legal_moves)
+                move = legal[0] if legal else None
+                score_cp = 0
+                depth = 1
+
             elapsed = int((time.time() - start) * 1000)
 
             if move is None:
                 print("bestmove 0000")
             else:
-                print(f"info depth {max_depth} time {elapsed} score cp 0")
+                # IMPORTANT: lichess-bot expects score cp to be an INTEGER
+                score_cp_int = int(round(score_cp))
+                print(f"info depth {depth} time {elapsed} score cp {score_cp_int}")
                 print(f"bestmove {move.uci()}")
 
             sys.stdout.flush()
-
 
         elif cmd == "quit":
             break
