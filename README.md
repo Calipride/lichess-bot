@@ -16,13 +16,61 @@
 </div>
 
 ## Overview
+Project Overview (Student Work)
 
-[lichess-bot](https://github.com/lichess-bot-devs/lichess-bot) is a free bridge
-between the [Lichess Bot API](https://lichess.org/api#tag/Bot) and chess engines.
+This project implements a working Lichess chess chatbot using the Python lichess-bot framework.
+The bot autonomously connects to Lichess, observes game events, and plays chess games against human players or other bots.
 
-With lichess-bot, you can create and operate a bot on lichess. Your bot will be able to play against humans and bots alike, and you will be able to view these games live on lichess.
+The move selection logic is AI-driven, combining classical game-search techniques with a machine learning model for position evaluation.
 
-See also the lichess-bot [documentation](https://github.com/lichess-bot-devs/lichess-bot/wiki) for further usage help.
+## AI-Based Player Algorithm
+Decision-Making Strategy
+
+The chatbot selects moves using an Iterative Deepening Alpha–Beta search algorithm.
+For each legal move, the algorithm explores future positions up to a time-limited depth and selects the move with the highest expected outcome.
+This approach allows the bot to:
+Respect time constraints
+Adapt search depth dynamically
+Prune unpromising branches efficiently
+
+## AI Model (Value Network)
+
+To evaluate board positions during search, the bot uses a neural value model implemented in PyTorch.
+
+Model characteristics:
+Input: Encoded chess board representation (piece positions and side-to-move)
+Architecture: Multi-layer perceptron (fully connected neural network)
+Output: A scalar value in the range [-1, 1], representing how favorable a position is for the bot
+Purpose: Replace hand-crafted heuristics with a learned evaluation function
+The search algorithm uses this value to compare positions and guide move selection.
+
+## Training Approach
+The value model is trained offline on labeled chess positions.
+Each training sample consists of:
+A chess board position
+A corresponding evaluation score (win/loss likelihood)
+The training process minimizes prediction error using a regression loss function.
+Once trained, the model is loaded by the bot and used during live games.
+
+## Critical Analysis & Limitations
+
+While the AI-driven approach improves decision quality, it has limitations:
+The value network does not directly predict moves; it must be combined with a search algorithm.
+The model depends on the quality and diversity of training data.
+The board encoding is simplified and does not explicitly capture long-term strategic concepts such as plans or pawn structures.
+Possible improvements include:
+Richer board encodings (castling rights, repetition, move count)
+Larger or convolutional neural networks
+Combining value prediction with a policy (move prediction) network
+
+## How This Project Meets the Evaluation Criteria
+
+| Criterion                             | How it is satisfied                                                            |
+| ------------------------------------- | ------------------------------------------------------------------------------ |
+| Working chatbot using Lichess library | Bot connects to Lichess, accepts challenges, and plays games automatically     |
+| AI-driven player algorithm            | Alpha–Beta search guided by a neural value model                               |
+| Understanding & explanation           | Architecture, training, limitations, and improvements are explicitly described |
+
 
 ## Features
 Supports:
