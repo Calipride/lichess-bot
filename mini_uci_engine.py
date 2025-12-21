@@ -7,12 +7,14 @@ import chess
 import numpy as np
 import torch
 import torch.nn as nn
-
+INF = 10_000
+LAST_BESTMOVE_UCI = None
 
 # ---------- MODEL LOADING ----------
 
 MODEL_PATH = Path(__file__).resolve().parent / "models" / "value_model.pt"
 INPUT_DIM = 64 * 6  # must match training
+print(f"Loaded model from: {MODEL_PATH}")
 
 class SearchTimeout(Exception):
     pass
@@ -49,12 +51,13 @@ def fen_to_vector(fen: str) -> np.ndarray:
     return x
 
 
-def load_value_model() -> ValueNet:
-    data = torch.load(MODEL_PATH, map_location="cpu")
-    model = ValueNet(input_dim=data["input_dim"])
-    model.load_state_dict(data["model_state_dict"])
+def load_value_model():
+    model = ValueNet(input_dim=INPUT_DIM)
+    state_dict = torch.load(MODEL_PATH, map_location="cpu")
+    model.load_state_dict(state_dict)
     model.eval()
     return model
+
 
 
 value_model = load_value_model()
@@ -62,21 +65,33 @@ value_model = load_value_model()
 
 # ---------- EVALUATION USING THE MODEL ----------
 
+
 @torch.no_grad()
 def evaluate(board: chess.Board) -> float:
-    # Terminal cases from side-to-move perspective
     if board.is_checkmate():
-        return -10000.0  # side to move is mated
+        return -10000.0
 
     if board.is_stalemate() or board.is_insufficient_material() or board.can_claim_fifty_moves():
         return 0.0
 
     vec = fen_to_vector(board.fen())
     x = torch.from_numpy(vec).unsqueeze(0)
-    value = value_model(x).item() * 1000.0  # model likely ~ "white advantage"
+    value = value_model(x).item() * 1000.0
 
-    # Convert to side-to-move perspective:
+    # ---- MATERIAL PROGRESS BONUS ----
+    material = sum(
+        len(board.pieces(pt, chess.WHITE)) - len(board.pieces(pt, chess.BLACK))
+        for pt in chess.PIECE_TYPES
+    )
+    value += material * 5
+
+    # discourage repetition
+    if board.can_claim_threefold_repetition():
+        value -= 50
+
     return value if board.turn == chess.WHITE else -value
+
+
 
 
 # ---------- SEARCH: MINIMAX + ALPHA-BETA ----------
@@ -87,6 +102,9 @@ INF = 1e9
 def alphabeta(board: chess.Board, depth: int, alpha: float, beta: float, deadline: float) -> float:
     if time.time() >= deadline:
         raise SearchTimeout()
+    # Soft penalty to avoid repetition lines deep in the tree
+    if board.is_repetition(2) or board.can_claim_threefold_repetition():
+        return evaluate(board) - 150.0
 
     if depth == 0 or board.is_game_over():
         return evaluate(board)
@@ -120,11 +138,14 @@ def alphabeta(board: chess.Board, depth: int, alpha: float, beta: float, deadlin
 
 
 def ordered_moves(board: chess.Board):
-    """Return legal moves, optionally ordered by heuristics."""
-    return list(board.legal_moves)
+    moves = list(board.legal_moves)
+    moves.sort(key=lambda m: board.is_capture(m), reverse=True)
+    return moves
 
 
 def choose_best_move_iterative(board: chess.Board, time_limit_ms: int, max_depth_cap: int = 6):
+    global LAST_BESTMOVE_UCI
+
     legal_moves = list(board.legal_moves)
     if not legal_moves:
         return None, 0, 0
@@ -147,16 +168,19 @@ def choose_best_move_iterative(board: chess.Board, time_limit_ms: int, max_depth
             if time.time() >= deadline:
                 break
 
+            # --- anti ping-pong: don't immediately repeat our last bestmove ---
+            if LAST_BESTMOVE_UCI is not None and move.uci() == LAST_BESTMOVE_UCI:
+                continue
+
             board.push(move)
             try:
                 score = -alphabeta(board, depth - 1, -INF, INF, deadline)
 
-                # discourage repetition / shuffling
+                # discourage repetition / shuffling at the root
                 if board.is_repetition(2) or board.can_claim_threefold_repetition():
-                    score -= 150
+                    score -= 150.0
 
             except SearchTimeout:
-                # time is up; stop this depth
                 break
             finally:
                 board.pop()
@@ -165,7 +189,6 @@ def choose_best_move_iterative(board: chess.Board, time_limit_ms: int, max_depth
                 current_best_score = score
                 current_best_move = move
 
-        # if we got at least one scored move at this depth, commit it
         if current_best_score > -INF:
             best_move = current_best_move
             best_score = current_best_score
@@ -173,16 +196,22 @@ def choose_best_move_iterative(board: chess.Board, time_limit_ms: int, max_depth
         else:
             break
 
+    # remember what we played so we avoid undoing it next turn
+    if best_move is not None:
+        LAST_BESTMOVE_UCI = best_move.uci()
+
     return best_move, best_score, reached_depth
 
 
-
-
 def depth_from_movetime(ms: int) -> int:
-    if ms < 300:  return 2
-    if ms < 800:  return 3
-    if ms < 1500: return 4
+    if ms < 300:
+        return 2
+    if ms < 800:
+        return 3
+    if ms < 1500:
+        return 4
     return 5
+
 
 
 

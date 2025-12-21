@@ -6,10 +6,12 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import chess
+import argparse
+from pathlib import Path
 
 # ---------- Paths ----------
 ROOT = Path(__file__).resolve().parent.parent
-DATA_CSV = ROOT / "data" / "training_positions.csv"
+DEFAULT_DATA_CSV = ROOT / "data" / "training_positions.csv"
 MODEL_DIR = ROOT / "models"
 MODEL_DIR.mkdir(exist_ok=True)
 MODEL_PATH = MODEL_DIR / "value_model.pt"
@@ -73,9 +75,22 @@ class ValueNet(nn.Module):
 
 
 def train():
-    print(f"Loading data from {DATA_CSV} ...")
-    X, y = load_dataset(DATA_CSV)
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--data",
+        type=str,
+        default=str(DEFAULT_DATA_CSV),
+        help="Path to training CSV (fen,value)"
+    )
+    args = parser.parse_args()
+
+    data_csv = Path(args.data)
+    if not data_csv.is_absolute():
+        data_csv = (ROOT / data_csv).resolve()
+    print(f"Loading data from {data_csv} ...")
+    X, y = load_dataset(data_csv)
     print(f"Dataset size: {len(X)} positions")
+
 
     # shuffle + train/val split (80/20)
     n = len(X)
@@ -106,9 +121,19 @@ def train():
 
     model = ValueNet().to(device)
     criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=1e-3)
+    optimizer = torch.optim.Adam(
+    model.parameters(),
+    lr=1e-4,
+    weight_decay=1e-4
+)
 
-    epochs = 5  # you can increase to 10+ later
+
+    best_val_loss = float("inf")
+    best_state_dict = None
+    patience = 3
+    epochs_without_improve = 0
+
+    epochs = 25
 
     for epoch in range(1, epochs + 1):
         # ---- Train ----
@@ -137,18 +162,29 @@ def train():
 
         val_loss /= len(val_loader.dataset)
 
+            # ---- Early stopping / best model tracking ----
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_state_dict = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            epochs_without_improve = 0
+        else:
+            epochs_without_improve += 1
+
         print(f"Epoch {epoch}/{epochs} - train_loss: {train_loss:.4f}  val_loss: {val_loss:.4f}")
 
-    # Save the trained model
-    torch.save(
-        {
-            "model_state_dict": model.state_dict(),
-            "input_dim": INPUT_DIM,
-        },
-        MODEL_PATH,
-    )
+        if epochs_without_improve >= patience:
+            print(f"Early stopping: no val improvement for {patience} epochs. Best val_loss={best_val_loss:.4f}")
+            break
 
-    print(f"Model saved to {MODEL_PATH}")
+
+    # Save the trained model
+        if best_state_dict is not None:
+         model.load_state_dict(best_state_dict)
+
+    torch.save(model.state_dict(), MODEL_PATH)
+    print(f"Model saved to {MODEL_PATH} (best val_loss={best_val_loss:.4f})")
+    if best_state_dict is not None:
+        model.load_state_dict(best_state_dict)
 
 
 if __name__ == "__main__":
