@@ -50,4 +50,7 @@ ignore = [
 max-complexity = 10
 [lint.per-file-ignores]
 "training/*.py" = ["T201"]
+[lint.per-file-ignores]
+"training/*.py" = ["T201", "PLW2901"]
+
 
