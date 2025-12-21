@@ -39,10 +39,8 @@ jobs:
     - name: Test with pytest
       env:
         LICHESS_BOT_TEST_TOKEN: ${{secrets.LICHESS_BOT_TEST_TOKEN}}
-      run: |
-        pytest --log-cli-level=10 \
-          --ignore=test_bot/test_bot.py \
-          --ignore=test_bot/test_external_moves.py
+      run: pytest --log-cli-level=10 --ignore=test_bot/test_bot.py --ignore=test_bot/test_external_moves.py
+    
 
     - name: Save engines
       id: cache-temp-save
